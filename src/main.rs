@@ -4,14 +4,14 @@ mod handshake;
 extern crate log;
 
 use crate::handshake::make_handshake;
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use dotenv::dotenv;
 use env_logger::Env;
 use rml_rtmp::sessions::{
     ServerSession, ServerSessionConfig, ServerSessionEvent, ServerSessionResult,
 };
 use std::io::prelude::*;
-use std::net::{TcpListener, TcpStream};
+use std::net::{SocketAddr, TcpListener, TcpStream};
 
 fn handle_client(mut stream: TcpStream) -> Result<()> {
     info!("Handling client: {}", stream.peer_addr()?);
@@ -85,13 +85,21 @@ fn main() -> Result<()> {
 
     env_logger::Builder::from_env(Env::default().default_filter_or("info")).init();
 
-    let listener = TcpListener::bind("127.0.0.1:1935")?;
+    let addr: SocketAddr = "127.0.0.1:1935"
+        .parse()
+        .context("Cannot parse RTMP socket address")?;
+    let listener = TcpListener::bind(addr).context(format!("Cannot to bind {}", addr))?;
 
-    info!("RTMP Relay listening on {}", listener.local_addr()?);
+    info!("RTMP Relay listening on {}", addr);
 
-    for stream in listener.incoming() {
-        handle_client(stream?)?;
-    }
+    listener.incoming().for_each(|stream| match stream {
+        Err(err) => error!("Cannot handle TcpStream because:\n\t{}", err),
+        Ok(stream) => {
+            if let Err(err) = handle_client(stream) {
+                error!("Cannot handle client because:\n\t{}", err)
+            }
+        }
+    });
 
     Ok(())
 }
