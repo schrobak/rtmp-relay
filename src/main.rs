@@ -6,6 +6,7 @@ extern crate log;
 use crate::handshake::make_handshake;
 use anyhow::{anyhow, Result};
 use dotenv::dotenv;
+use env_logger::Env;
 use rml_rtmp::sessions::{
     ServerSession, ServerSessionConfig, ServerSessionEvent, ServerSessionResult,
 };
@@ -80,8 +81,9 @@ fn handle_result(
 }
 
 fn main() -> Result<()> {
-    dotenv()?;
-    env_logger::init();
+    dotenv().ok();
+
+    env_logger::Builder::from_env(Env::default().default_filter_or("info")).init();
 
     let listener = TcpListener::bind("127.0.0.1:1935")?;
 
