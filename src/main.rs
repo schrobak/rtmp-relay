@@ -12,6 +12,7 @@ use rml_rtmp::sessions::{
 };
 use std::io::prelude::*;
 use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::{io, thread, time};
 
 fn handle_client(mut stream: TcpStream) -> Result<()> {
     info!("Handling client: {}", stream.peer_addr()?);
@@ -231,16 +232,25 @@ fn main() -> Result<()> {
         .parse()
         .context("Cannot parse RTMP socket address")?;
     let listener = TcpListener::bind(addr).context(format!("Cannot to bind {}", addr))?;
-    // TODO: add non-blocking and handle error in listener
+    listener
+        .set_nonblocking(true)
+        .context("set listener to non-blocking mode")?;
 
     info!("RTMP Relay listening on {}", addr);
 
+    // FIXME: below code is terrible
     listener.incoming().for_each(|stream| match stream {
-        Err(err) => error!("Cannot handle TcpStream because:\n\t{}", err),
-        Ok(stream) => match handle_client(stream) {
-            Ok(_) => info!("client handling done"),
-            Err(err) => error!("Cannot handle client because:\n\t{:#?}", err),
+        Ok(stream) => match stream.set_nonblocking(false) {
+            Ok(_) => match handle_client(stream) {
+                Ok(_) => debug!("client done"),
+                Err(err) => error!("cannot handle client\r\t{:#?}", err),
+            },
+            Err(err) => error!("cannot set stream to blocking mode\r\t{:#?}", err),
         },
+        Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
+            thread::sleep(time::Duration::from_millis(100));
+        }
+        Err(err) => error!("Cannot handle TcpStream because:\n\t{:#?}", err),
     });
 
     Ok(())

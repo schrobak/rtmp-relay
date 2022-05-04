@@ -12,10 +12,7 @@ pub fn make_handshake(stream: &mut TcpStream) -> Result<()> {
         let (is_completed, response_bytes) = match handshake.process_bytes(&buffer[..bytes_read])? {
             HandshakeProcessResult::InProgress {
                 response_bytes: bytes,
-            } => {
-                info!("handshake in progress");
-                (false, bytes)
-            }
+            } => (false, bytes),
             HandshakeProcessResult::Completed {
                 response_bytes: bytes,
                 remaining_bytes: _,
