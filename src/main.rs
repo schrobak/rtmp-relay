@@ -28,32 +28,177 @@ fn handle_client(mut stream: TcpStream) -> Result<()> {
 
     let mut buffer = [0u8; 1024];
 
-    loop {
+    'client: loop {
         let bytes_read = stream.read(&mut buffer)?;
         let results = session.handle_input(&buffer[..bytes_read])?;
         for result in results {
             if let Some(event) = handle_result(result, &mut stream)? {
                 match event {
+                    ServerSessionEvent::ClientChunkSizeChanged { new_chunk_size } => {
+                        debug!(
+                            r#"new_chunk_size={} msg="{}""#,
+                            new_chunk_size, "client chunk size changed"
+                        );
+                    }
                     ServerSessionEvent::ConnectionRequested {
                         request_id,
                         app_name,
                     } => {
                         info!(
-                            "accepting connection request {} for app {}",
-                            request_id, app_name
+                            r#"request_id={} app_name={} msg="{}""#,
+                            request_id, app_name, "connection requested"
                         );
-                        let results = session.accept_request(request_id)?;
-                        for result in results {
-                            if let Some(event) = handle_result(result, &mut stream)? {
-                                debug!("handling event after accepting connection {:?}", event);
-                            }
-                        }
+                        accept_session_request(request_id, &mut session, &mut stream)?;
                     }
-                    event => debug!("handling event: {:?}", event),
+                    ServerSessionEvent::ReleaseStreamRequested {
+                        request_id,
+                        app_name,
+                        stream_key,
+                    } => {
+                        info!(
+                            r#"request_id={} app_name={} stream_key={} msg="{}""#,
+                            request_id, app_name, stream_key, "release stream requested"
+                        );
+                        accept_session_request(request_id, &mut session, &mut stream)?;
+                    }
+                    ServerSessionEvent::PublishStreamRequested {
+                        request_id,
+                        app_name,
+                        stream_key,
+                        mode,
+                    } => {
+                        info!(
+                            r#"request_id={} app_name={} stream_key={} mode={:?} msg="{}""#,
+                            request_id, app_name, stream_key, mode, "publish stream requested"
+                        );
+                        accept_session_request(request_id, &mut session, &mut stream)?;
+                    }
+                    ServerSessionEvent::PublishStreamFinished {
+                        app_name,
+                        stream_key,
+                    } => {
+                        info!(
+                            r#"app_name={} stream_key={} msg="{}""#,
+                            app_name, stream_key, "publish stream finished"
+                        );
+                        break 'client;
+                    }
+                    ServerSessionEvent::StreamMetadataChanged {
+                        app_name,
+                        stream_key,
+                        metadata,
+                    } => {
+                        debug!(
+                            r#"app_name={} stream_key={} msg="{}""#,
+                            app_name, stream_key, "stream metadata changed"
+                        );
+                        trace!("{:#?}", metadata);
+                    }
+                    ServerSessionEvent::AudioDataReceived {
+                        app_name,
+                        stream_key,
+                        data,
+                        timestamp,
+                    } => {
+                        trace!(
+                            r#"app_name={} stream_key={} data={} duration={} msg="{}""#,
+                            app_name,
+                            stream_key,
+                            data.len(),
+                            timestamp.value,
+                            "audio data received"
+                        );
+                    }
+                    ServerSessionEvent::VideoDataReceived {
+                        app_name,
+                        stream_key,
+                        data,
+                        timestamp,
+                    } => {
+                        trace!(
+                            r#"app_name={} stream_key={} data={} duration={} msg="{}""#,
+                            app_name,
+                            stream_key,
+                            data.len(),
+                            timestamp.value,
+                            "video data received"
+                        );
+                    }
+                    ServerSessionEvent::UnhandleableAmf0Command {
+                        transaction_id,
+                        command_name,
+                        command_object,
+                        additional_values,
+                    } => {
+                        warn!(
+                            r#"transaction_id={} command_name={} command_object={:?} additional_values={:?} msg="{}""#,
+                            transaction_id,
+                            command_name,
+                            command_object,
+                            additional_values,
+                            "unhandled amf0 command"
+                        );
+                    }
+                    ServerSessionEvent::PlayStreamRequested {
+                        request_id,
+                        app_name,
+                        stream_key,
+                        stream_id,
+                        reset,
+                        duration,
+                        start_at,
+                    } => {
+                        info!(
+                            r#"request_id={} app_name={} stream_key={} stream_id={} duration={:?} start_at={:?} reset={} msg="{}""#,
+                            request_id,
+                            app_name,
+                            stream_key,
+                            stream_id,
+                            duration,
+                            start_at,
+                            reset,
+                            "play stream requested"
+                        );
+                        accept_session_request(request_id, &mut session, &mut stream)?;
+                    }
+                    ServerSessionEvent::PlayStreamFinished {
+                        app_name,
+                        stream_key,
+                    } => {
+                        info!(
+                            r#"app_name={} stream_key={} msg="{}""#,
+                            app_name, stream_key, "play stream finished"
+                        );
+                    }
+                    ServerSessionEvent::AcknowledgementReceived { bytes_received } => {
+                        debug!(
+                            r#"bytes_received={} msg="{}""#,
+                            bytes_received, "ack received"
+                        );
+                    }
+                    ServerSessionEvent::PingResponseReceived { timestamp } => {
+                        debug!(r#"timestamp={:?} msg="{}""#, timestamp, "pong received");
+                    }
                 };
             }
         }
     }
+
+    Ok(())
+}
+
+fn accept_session_request(
+    request_id: u32,
+    session: &mut ServerSession,
+    stream: &mut TcpStream,
+) -> Result<()> {
+    let results = session.accept_request(request_id)?;
+    for result in results {
+        if let Some(event) = handle_result(result, stream)? {
+            debug!("handling event after accepting request {:?}", event);
+        }
+    }
+    Ok(())
 }
 
 fn handle_result(
@@ -61,10 +206,7 @@ fn handle_result(
     stream: &mut TcpStream,
 ) -> Result<Option<ServerSessionEvent>> {
     match result {
-        ServerSessionResult::RaisedEvent(event) => {
-            debug!("server session raised event: {:?}", event);
-            Ok(Some(event))
-        }
+        ServerSessionResult::RaisedEvent(event) => Ok(Some(event)),
         ServerSessionResult::OutboundResponse(packet) => {
             trace!("server session outbound response: {:?}", packet);
             if !packet.can_be_dropped {
@@ -89,16 +231,16 @@ fn main() -> Result<()> {
         .parse()
         .context("Cannot parse RTMP socket address")?;
     let listener = TcpListener::bind(addr).context(format!("Cannot to bind {}", addr))?;
+    // TODO: add non-blocking and handle error in listener
 
     info!("RTMP Relay listening on {}", addr);
 
     listener.incoming().for_each(|stream| match stream {
         Err(err) => error!("Cannot handle TcpStream because:\n\t{}", err),
-        Ok(stream) => {
-            if let Err(err) = handle_client(stream) {
-                error!("Cannot handle client because:\n\t{}", err)
-            }
-        }
+        Ok(stream) => match handle_client(stream) {
+            Ok(_) => info!("client handling done"),
+            Err(err) => error!("Cannot handle client because:\n\t{:#?}", err),
+        },
     });
 
     Ok(())
