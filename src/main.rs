@@ -1,9 +1,9 @@
-mod handshake;
+mod rtmp;
 
 #[macro_use]
 extern crate log;
 
-use crate::handshake::make_handshake;
+use crate::rtmp::handshake;
 use anyhow::{anyhow, Context, Result};
 use dotenv::dotenv;
 use env_logger::Env;
@@ -17,7 +17,10 @@ use std::{io, thread, time};
 fn handle_client(mut stream: TcpStream) -> Result<()> {
     info!("Handling client: {}", stream.peer_addr()?);
 
-    make_handshake(&mut stream)?;
+    if let Err(err) = handshake::handle_handshake(&mut stream) {
+        error!("handshake error\r\t{}", err);
+        return Ok(());
+    }
 
     let (mut session, results) = ServerSession::new(ServerSessionConfig::new())?;
 
