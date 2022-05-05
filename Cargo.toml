@@ -11,3 +11,5 @@ log = "0.4.0"
 env_logger = "0.8.4"
 rml_rtmp = "0.6.1"
 dotenv = "0.15.0"
+gst = { package = "gstreamer", version = "0.18.8" }
+gst_app = { package = "gstreamer-app", version = "0.18.7" }

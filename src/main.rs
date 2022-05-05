@@ -2,17 +2,74 @@ mod rtmp;
 
 #[macro_use]
 extern crate log;
+extern crate core;
 
 use crate::rtmp::handshake;
 use anyhow::{anyhow, Context, Result};
 use dotenv::dotenv;
 use env_logger::Env;
+use gst::prelude::*;
 use rml_rtmp::sessions::{
     ServerSession, ServerSessionConfig, ServerSessionEvent, ServerSessionResult,
 };
 use std::io::prelude::*;
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::{io, thread, time};
+
+fn run_bus(pipeline: gst::Pipeline) {
+    let bus = pipeline
+        .bus()
+        .expect("Pipeline without bus. Shouldn't happen!");
+
+    for msg in bus.iter_timed(gst::ClockTime::NONE) {
+        use gst::MessageView;
+        match msg.view() {
+            MessageView::Eos(..) => {
+                info!("end of stream");
+                break;
+            }
+            MessageView::Error(err) => {
+                error!("{:#?}", err);
+                pipeline.set_state(gst::State::Null).unwrap();
+            }
+            _ => (),
+        }
+    }
+}
+
+fn create_pipeline() -> Result<gst::Pipeline> {
+    gst::init()?;
+
+    let pipeline = gst::Pipeline::new(None);
+    let src = gst::ElementFactory::make("appsrc", Some("appsrc"))?;
+    // let x264enc = gst::ElementFactory::make("x264enc", None)?;
+    // let matroskamux = gst::ElementFactory::make("matroskamux", None)?;
+    // let filesink = gst::ElementFactory::make("filesink", None)?;
+    // filesink.set_property("location", "file.mkv");
+    //
+    // pipeline.add_many(&[&src, &x264enc, &matroskamux, &filesink])?;
+    // gst::Element::link_many(&[&src, &x264enc, &matroskamux, &filesink])?;
+
+    let videoconvert = gst::ElementFactory::make("videoconvert", None)?;
+    let sink = gst::ElementFactory::make("autovideosink", None)?;
+
+    pipeline.add_many(&[&src, &videoconvert, &sink])?;
+    gst::Element::link_many(&[&src, &videoconvert, &sink])?;
+
+    // let appsrc = src
+    //     .dynamic_cast::<gst_app::AppSrc>()
+    //     .expect("Source element is expected to be an appsrc!");
+
+    // let video_info = gst_video::VideoInfo::builder(gst_video::VideoFormat::Bgrx, 320, 240)
+    //     .fps(gst::Fraction::new(2, 1))
+    //     .build()
+    //     .expect("Failed to create video info");
+    //
+    // appsrc.set_caps(Some(&video_info.to_caps().unwrap()));
+    // appsrc.set_format(gst::Format::Time);
+
+    Ok(pipeline)
+}
 
 fn handle_client(mut stream: TcpStream) -> Result<()> {
     info!("Handling client: {}", stream.peer_addr()?);
@@ -29,6 +86,18 @@ fn handle_client(mut stream: TcpStream) -> Result<()> {
             debug!("handling event: {:#?}", event);
         }
     }
+
+    let pipeline = create_pipeline().context("cannot create pipeline")?;
+    let appsrc = pipeline
+        .by_name("appsrc")
+        .context("cannot get appsrc by name")?
+        .dynamic_cast::<gst_app::AppSrc>()
+        .expect("Source element is expected to be an appsrc!");
+
+    let p = pipeline.clone();
+    let join_handle = thread::spawn(move || run_bus(p));
+
+    pipeline.set_state(gst::State::Playing)?;
 
     let mut buffer = [0u8; 1024];
 
@@ -127,6 +196,9 @@ fn handle_client(mut stream: TcpStream) -> Result<()> {
                             timestamp.value,
                             "video data received"
                         );
+                        if let Err(err) = appsrc.push_buffer(gst::Buffer::from_slice(data)) {
+                            error!("flow error {:#?}", err)
+                        }
                     }
                     ServerSessionEvent::UnhandleableAmf0Command {
                         transaction_id,
@@ -187,6 +259,9 @@ fn handle_client(mut stream: TcpStream) -> Result<()> {
             }
         }
     }
+
+    pipeline.set_state(gst::State::Null)?;
+    join_handle.join().expect("cannot join thread");
 
     Ok(())
 }
