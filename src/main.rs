@@ -8,7 +8,7 @@ use crate::rtmp::handshake;
 use anyhow::{anyhow, Context, Result};
 use dotenv::dotenv;
 use env_logger::Env;
-use gst::prelude::*;
+use gst_app::prelude::*;
 use rml_rtmp::sessions::{
     ServerSession, ServerSessionConfig, ServerSessionEvent, ServerSessionResult,
 };
@@ -16,10 +16,10 @@ use std::io::prelude::*;
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::{io, thread, time};
 
-fn run_bus(pipeline: gst::Pipeline) {
-    let bus = pipeline
-        .bus()
-        .expect("Pipeline without bus. Shouldn't happen!");
+fn run_bus(pipeline: gst::Pipeline) -> Result<()> {
+    pipeline.set_state(gst::State::Playing)?;
+
+    let bus = pipeline.bus().context("Cannot create bus from pipeline")?;
 
     for msg in bus.iter_timed(gst::ClockTime::NONE) {
         use gst::MessageView;
@@ -32,29 +32,34 @@ fn run_bus(pipeline: gst::Pipeline) {
                 error!("{:#?}", err);
                 pipeline.set_state(gst::State::Null).unwrap();
             }
-            _ => (),
+            x => debug!("handling message:\n{:#?}", x),
         }
     }
+
+    pipeline.set_state(gst::State::Null)?;
+
+    Ok(())
 }
 
 fn create_pipeline() -> Result<gst::Pipeline> {
     gst::init()?;
 
+    let appsrc = gst::ElementFactory::make("appsrc", None).context("Cannot create appsrc")?;
+    let x264enc = gst::ElementFactory::make("x264enc", None).context("Cannot create x264enc")?;
+    let matroskamux =
+        gst::ElementFactory::make("matroskamux", None).context("Cannot create matroskamux")?;
+    let filesink = gst::ElementFactory::make("filesink", None).context("Cannot create filesink")?;
+    filesink.set_property("location", "file.mkv");
+
     let pipeline = gst::Pipeline::new(None);
-    let src = gst::ElementFactory::make("appsrc", Some("appsrc"))?;
-    // let x264enc = gst::ElementFactory::make("x264enc", None)?;
-    // let matroskamux = gst::ElementFactory::make("matroskamux", None)?;
-    // let filesink = gst::ElementFactory::make("filesink", None)?;
-    // filesink.set_property("location", "file.mkv");
-    //
-    // pipeline.add_many(&[&src, &x264enc, &matroskamux, &filesink])?;
-    // gst::Element::link_many(&[&src, &x264enc, &matroskamux, &filesink])?;
+    pipeline.add_many(&[&appsrc, &x264enc, &matroskamux, &filesink])?;
+    gst::Element::link_many(&[&appsrc, &x264enc, &matroskamux, &filesink])?;
 
-    let videoconvert = gst::ElementFactory::make("videoconvert", None)?;
-    let sink = gst::ElementFactory::make("autovideosink", None)?;
+    // let videoconvert = gst::ElementFactory::make("videoconvert", None)?;
+    // let sink = gst::ElementFactory::make("autovideosink", None)?;
 
-    pipeline.add_many(&[&src, &videoconvert, &sink])?;
-    gst::Element::link_many(&[&src, &videoconvert, &sink])?;
+    // pipeline.add_many(&[&src, &videoconvert, &sink])?;
+    // gst::Element::link_many(&[&src, &videoconvert, &sink])?;
 
     // let appsrc = src
     //     .dynamic_cast::<gst_app::AppSrc>()
@@ -306,6 +311,14 @@ fn main() -> Result<()> {
 
     env_logger::Builder::from_env(Env::default().default_filter_or("info")).init();
 
+    // run_rtmp_server()?;
+    let pipeline = create_pipeline()?;
+    run_bus(pipeline);
+
+    Ok(())
+}
+
+fn run_rtmp_server() -> Result<()> {
     let addr: SocketAddr = "127.0.0.1:1935"
         .parse()
         .context("Cannot parse RTMP socket address")?;
