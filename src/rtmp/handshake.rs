@@ -42,7 +42,7 @@ fn handle_handshake_result(handshake_result: HandshakeProcessResult) -> Handshak
             response_bytes: bytes,
             remaining_bytes: _,
         } => {
-            debug!("handshake completed");
+            info!("handshake completed");
             HandshakeStatus::Completed(bytes)
         }
     }
